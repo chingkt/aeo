@@ -103,7 +103,7 @@ form.addEventListener('submit', async (event) => {
   button.disabled = true;
   const stopLoading = showLoading();
   try {
-    const response = await fetch('/api/analyze', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: input.value }) });
+    const response = await fetch('/aeo/api/analyze', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: input.value }) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'The scan could not be completed.');
     renderReport(data);

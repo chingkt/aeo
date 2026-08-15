@@ -10,6 +10,12 @@ test('rejects localhost', () => {
   assert.throws(() => normalizeUrl('http://localhost:3000'), /Local network/);
 });
 
+test('rejects private, credentialed, and non-standard-port targets', () => {
+  assert.throws(() => normalizeUrl('http://169.254.169.254/latest/meta-data'), /Local network/);
+  assert.throws(() => normalizeUrl('https://user:pass@example.com'), /credentials/);
+  assert.throws(() => normalizeUrl('https://example.com:8443'), /standard web ports/);
+});
+
 test('deduplicates and resolves links', () => {
   const links = collectLinks('<a href="/one">One</a><a href="/one">Again</a><a href="https://other.test/two">Two</a>', new URL('https://example.com'));
   assert.deepEqual(links.map((link) => link.href), ['https://example.com/one', 'https://other.test/two']);

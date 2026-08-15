@@ -12,7 +12,33 @@ Requirements: Node.js 20 or newer.
 npm start
 ```
 
-Open [http://127.0.0.1:4173](http://127.0.0.1:4173), enter a public website URL, and select **Analyze my site**.
+Open [http://127.0.0.1:4173/aeo/](http://127.0.0.1:4173/aeo/), enter a public website URL, and select **Analyze my site**.
+
+## Deploy to Cloudflare Workers
+
+The repository is configured to serve the app at `https://tangchingkei.com/aeo/` and the scanner API at `/aeo/api/analyze`.
+
+Cloudflare Workers Builds settings:
+
+| Setting | Value |
+| --- | --- |
+| Production branch | `main` |
+| Root directory | `/` |
+| Build command | `npm run build` |
+| Deploy command | `npx wrangler deploy` |
+| Non-production deploy command | `npx wrangler versions upload` |
+
+Validate without deploying:
+
+```bash
+npm ci
+npm test
+npm run deploy:dry
+```
+
+The build copies the browser assets into `dist/aeo`, matching Cloudflare's required subdirectory layout. `wrangler.jsonc` attaches only the exact `/aeo` and `/aeo/*` routes, so other paths on `tangchingkei.com` continue to use the existing site.
+
+Before inviting broad public traffic, configure a Cloudflare rate-limiting rule for `POST /aeo/api/analyze`. The application blocks local/private address literals, credentials, non-standard ports, oversized responses, and unsafe redirects, but rate limiting remains an infrastructure responsibility.
 
 ## What the prototype checks
 

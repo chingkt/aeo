@@ -1,0 +1,28 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "aeo",
+  "main": "./src/worker.mjs",
+  "compatibility_date": "2026-08-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "tangchingkei.com/aeo",
+      "zone_name": "tangchingkei.com"
+    },
+    {
+      "pattern": "tangchingkei.com/aeo/*",
+      "zone_name": "tangchingkei.com"
+    }
+  ],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "none",
+    "run_worker_first": ["/aeo/api/*"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}

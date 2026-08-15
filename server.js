@@ -5,9 +5,10 @@ const { URL } = require('node:url');
 
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || '127.0.0.1';
-const PUBLIC_DIR = path.join(__dirname, 'public');
+const PUBLIC_DIR = typeof __dirname === 'string' ? path.join(__dirname, 'public') : '';
 const MAX_HTML_BYTES = 1_500_000;
 const REQUEST_TIMEOUT_MS = 12_000;
+const MAX_REDIRECTS = 4;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -24,12 +25,49 @@ function json(res, status, body) {
 
 function normalizeUrl(input) {
   const candidate = /^https?:\/\//i.test(input) ? input : `https://${input}`;
-  const url = new URL(candidate);
+  let url;
+  try {
+    url = new URL(candidate);
+  } catch {
+    throw new Error('Enter a valid public website URL.');
+  }
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Only HTTP and HTTPS links are supported.');
-  if (['localhost', '127.0.0.1', '::1'].includes(url.hostname) || url.hostname.endsWith('.local')) {
+  if (url.username || url.password) throw new Error('URLs containing credentials cannot be scanned.');
+  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const ipv4 = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)?.slice(1).map(Number);
+  const privateIpv4 = ipv4 && (
+    ipv4.some((part) => part > 255) || ipv4[0] === 0 || ipv4[0] === 10 || ipv4[0] === 127 ||
+    (ipv4[0] === 169 && ipv4[1] === 254) || (ipv4[0] === 172 && ipv4[1] >= 16 && ipv4[1] <= 31) ||
+    (ipv4[0] === 192 && ipv4[1] === 168) || (ipv4[0] === 100 && ipv4[1] >= 64 && ipv4[1] <= 127) ||
+    ipv4[0] >= 224
+  );
+  const privateIpv6 = hostname === '::' || hostname === '::1' || hostname.startsWith('fc') || hostname.startsWith('fd') || hostname.startsWith('fe8') || hostname.startsWith('fe9') || hostname.startsWith('fea') || hostname.startsWith('feb');
+  const privateName = hostname === 'localhost' || ['.localhost', '.local', '.internal', '.lan', '.home'].some((suffix) => hostname.endsWith(suffix));
+  if (privateIpv4 || privateIpv6 || privateName) {
     throw new Error('Local network addresses cannot be scanned.');
   }
+  if (url.port && !['80', '443'].includes(url.port)) throw new Error('Only standard web ports can be scanned.');
+  url.hash = '';
   return url;
+}
+
+async function readLimitedText(response) {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let body = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > MAX_HTML_BYTES) {
+      await reader.cancel();
+      throw new Error('The website response is too large to scan safely.');
+    }
+    body += decoder.decode(value, { stream: true });
+  }
+  return body + decoder.decode();
 }
 
 async function fetchText(url, options = {}) {
@@ -37,16 +75,24 @@ async function fetchText(url, options = {}) {
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   const started = performance.now();
   try {
-    const response = await fetch(url, {
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: { 'user-agent': 'SignalReady-AEO-Prototype/1.0 (+local audit)' },
-      ...options
-    });
+    let currentUrl = normalizeUrl(url.href || String(url));
+    let response;
+    for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
+      response = await fetch(currentUrl, {
+        redirect: 'manual',
+        signal: controller.signal,
+        headers: { 'user-agent': 'SignalReady-AEO-Prototype/1.0 (+public audit)' },
+        ...options
+      });
+      const location = response.headers.get('location');
+      if (![301, 302, 303, 307, 308].includes(response.status) || !location) break;
+      if (redirectCount === MAX_REDIRECTS) throw new Error('The website redirected too many times.');
+      currentUrl = normalizeUrl(new URL(location, currentUrl).href);
+    }
     const type = response.headers.get('content-type') || '';
     let body = '';
     if (type.includes('text') || type.includes('html') || type.includes('json') || !type) {
-      body = (await response.text()).slice(0, MAX_HTML_BYTES);
+      body = await readLimitedText(response);
     }
     return { response, body, elapsed: Math.round(performance.now() - started) };
   } finally {
@@ -267,7 +313,15 @@ async function analyze(input) {
     fetchText(new URL('/robots.txt', rootUrl)).then((r) => ({ ok: r.response.ok, status: r.response.status, body: r.body })).catch(() => ({ ok: false, body: '' })),
     fetchText(new URL('/sitemap.xml', rootUrl)).then((r) => ({ ok: r.response.ok, status: r.response.status })).catch(() => ({ ok: false })),
     Promise.all(internalPages.map((url) => fetchText(url).then((r) => r.response.ok && r.response.headers.get('content-type')?.includes('html') ? { html: r.body, url: new URL(r.response.url), elapsed: r.elapsed } : null).catch(() => null))),
-    Promise.all(linkSample.map((link) => fetchText(link, { method: 'HEAD' }).then((r) => ({ url: link.href, status: r.response.status })).catch((error) => ({ url: link.href, error: error.name }))))
+    Promise.all(linkSample.map(async (link) => {
+      try {
+        let result = await fetchText(link, { method: 'HEAD' });
+        if (result.response.status === 405) result = await fetchText(link);
+        return { url: link.href, status: result.response.status };
+      } catch (error) {
+        return { url: link.href, error: error.name };
+      }
+    }))
   ]);
   const rawPages = [{ html: main.body, url: rootUrl, elapsed: main.elapsed }, ...pageResults.filter(Boolean)];
   const pages = rawPages.map((page) => ({ ...pageFacts(page.html, page.url, page.elapsed), html: page.html }));
@@ -291,7 +345,12 @@ async function handleApi(req, res) {
 }
 
 async function serveStatic(req, res) {
-  const requested = req.url === '/' ? '/index.html' : req.url.split('?')[0];
+  if (req.url === '/' || req.url === '/aeo') {
+    res.writeHead(302, { location: '/aeo/' });
+    return res.end();
+  }
+  const pathname = req.url.split('?')[0];
+  const requested = pathname === '/aeo/' ? '/index.html' : pathname.startsWith('/aeo/') ? pathname.slice(4) : pathname;
   const filePath = path.normalize(path.join(PUBLIC_DIR, requested));
   if (!filePath.startsWith(PUBLIC_DIR)) return json(res, 403, { error: 'Forbidden' });
   try {
@@ -304,7 +363,7 @@ async function serveStatic(req, res) {
 }
 
 const server = http.createServer((req, res) => {
-  if (req.method === 'POST' && req.url === '/api/analyze') return handleApi(req, res);
+  if (req.method === 'POST' && ['/api/analyze', '/aeo/api/analyze'].includes(req.url)) return handleApi(req, res);
   if (req.method === 'GET') return serveStatic(req, res);
   json(res, 405, { error: 'Method not allowed' });
 });
@@ -313,4 +372,4 @@ if (require.main === module) {
   server.listen(PORT, HOST, () => console.log(`SignalReady is running at http://${HOST}:${PORT}`));
 }
 
-module.exports = { analyzeHtml, normalizeUrl, collectLinks };
+module.exports = { analyze, analyzeHtml, normalizeUrl, collectLinks };
